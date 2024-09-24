@@ -3,10 +3,12 @@ from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain.chains import RetrievalQA
-from langchain_community.llms import Anthropic
 from dotenv import load_dotenv
 import os
+from langchain.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_anthropic import ChatAnthropic
 
 load_dotenv()
 
@@ -49,17 +51,45 @@ def main():
         chunks = process_text(all_text)
         vectorstore = create_vector_store(chunks)
 
-        claude = Anthropic(model="claude-2")
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=claude,
-            chain_type="stuff",
-            retriever=vectorstore.as_retriever()
+        retriever = vectorstore.as_retriever(
+        search_type="mmr", 
+        search_kwargs={"k": 12},
         )
 
+        llm = ChatAnthropic(model="claude-3-5-sonnet-20240620")
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("placeholder", "{chat_history}"),
+                ("user", "{input}"),
+                (
+                    "user",
+                    "Given the above conversation, generate a search query to look up to get information relevant to the conversation",
+                ),
+            ]
+        )
+
+        retriever_chain = create_history_aware_retriever(llm, retriever, prompt)
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "Answer the user's questions based on the below context:\n\n{context}",
+                ),
+                ("placeholder", "{chat_history}"),
+                ("user", "{input}"),
+            ]
+        )
+        document_chain = create_stuff_documents_chain(llm, prompt)
+
+        qa = create_retrieval_chain(retriever_chain, document_chain)
+
         user_question = st.text_input("Ask a question about the uploaded PDFs:")
+
         if user_question:
-            response = qa_chain.run(user_question)
-            st.write("Answer:", response)
+            result = qa.invoke({"input": user_question})
+            st.write("Answer:", result["answer"])
 
 if __name__ == "__main__":
     main()
